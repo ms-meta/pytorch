@@ -179,7 +179,6 @@ class TestPatternMatcherBase(TestCase):
         else:
             assert check_autocast == torch.float32
             maybe_autocast = contextlib.nullcontext()
-
         if check_quantization:
             convert_model = _generate_qdq_quantized_model(
                 mod, inputs, is_qat, is_dynamic, quantizer
@@ -2048,10 +2047,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             is_qat=True,
         )
 
-    @skipIfNoDynamoSupport
-    @skipIfNoONEDNN
-    @skipIfRocm
-    def test_qconv2d_dequant_promotion_cpu(self):
+    def _test_qconv2d_dequant_promotion_helper(self, device="cpu"):
         r"""
         This testcase tests if dequant node before conv2d is promoted correctly:
                  X
@@ -2080,8 +2076,12 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 temp = self.conv2(temp) + self.conv3(temp)
                 return temp
 
-        mod = M().eval()
-        v = torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False).add(1)
+        mod = M().eval().to(device=device)
+        v = (
+            torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False)
+            .add(1)
+            .to(device=device)
+        )
 
         def matcher_check_fn():
             # 1. Dequant pattern matcher for dequant promotion * 1
@@ -2113,6 +2113,19 @@ class TestPatternMatcher(TestPatternMatcherBase):
             matcher_check_fn,
             check_quantization=True,
         )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfRocm
+    def test_qconv2d_dequant_promotion(self):
+        self._test_qconv2d_dequant_promotion_helper()
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfRocm
+    @skipIfNoXPU
+    def test_qconv2d_dequant_promotion_xpu(self):
+        self._test_qconv2d_dequant_promotion_helper(device="xpu")
 
     def _qlinear_test_helper(
         self,
@@ -2225,6 +2238,21 @@ class TestPatternMatcher(TestPatternMatcherBase):
             )
 
     @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoXPU
+    def test_qlinear_int8_mixed_bf16_xpu(self):
+        r"""
+        This testcase will quantize a single Linear Moduel with int8_mixed_bf16 quantization.
+        """
+        for bias in [True, False]:
+            self._qlinear_cpu_test_helper(
+                (torch.randn((2, 4)).to(device="xpu"),),
+                device="xpu",
+                int8_mixed_bf16=True,
+                bias=bias,
+            )
+
+    @skipIfNoDynamoSupport
     @skipIfNoONEDNN
     def test_qlinear_input_dim_exceeds_2(self):
         r"""
@@ -2232,6 +2260,18 @@ class TestPatternMatcher(TestPatternMatcherBase):
         """
         for bias in [True, False]:
             self._qlinear_test_helper((torch.randn((2, 3, 4)),), bias=bias)
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_input_dim_exceeds_2_xpu(self):
+        r"""
+        This testcase will quantize a single Linear Moduel.
+        """
+        for bias in [True, False]:
+            self._qlinear_cpu_test_helper(
+                (torch.randn((2, 3, 4)).to(device="xpu"),), device="xpu", bias=bias
+            )
 
     @skipIfNoDynamoSupport
     @skipIfNoONEDNNBF16
@@ -2243,6 +2283,22 @@ class TestPatternMatcher(TestPatternMatcherBase):
         for bias in [True, False]:
             self._qlinear_test_helper(
                 (torch.randn((2, 3, 4)),), int8_mixed_bf16=True, bias=bias
+            )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_int8_mixed_bf16_input_dim_exceeds_2_xpu(self):
+        r"""
+        This testcase will quantize a single Linear Moduel with int8_mixed_bf16 quantization.
+        """
+        for bias in [True, False]:
+            self._qlinear_cpu_test_helper(
+                (torch.randn((2, 3, 4)).to(device="xpu"),),
+                device="xpu",
+                int8_mixed_bf16=True,
+                bias=bias,
             )
 
     @skipIfNoDynamoSupport
@@ -2293,6 +2349,36 @@ class TestPatternMatcher(TestPatternMatcherBase):
 
             self._qlinear_test_helper(
                 (torch.randn((2, 4, 3, 4)),),
+                int8_mixed_bf16=True,
+                do_permute=True,
+                matcher_check_fn=matcher_check_fn,
+                bias=bias,
+            )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_int8_mixed_bf16_input_dim_exceeds_2_and_not_contiguous_xpu(self):
+        r"""
+        This testcase will quantize a single Linear Module for int8_bf16.
+        * Input dim exceeds 2
+        * Input not contiguous
+        """
+        for bias in [True, False]:
+
+            def matcher_check_fn():
+                self.assertEqual(
+                    counters["inductor"]["qlinear_weight_prepack_matcher_count"], 2
+                )
+                self.assertEqual(
+                    counters["inductor"]["qlinear_weight_prepack_matcher_nodes"],
+                    17 if bias else 16,
+                )
+
+            self._qlinear_cpu_test_helper(
+                (torch.randn((2, 4, 3, 4)).to(device="xpu"),),
+                device="xpu",
                 int8_mixed_bf16=True,
                 do_permute=True,
                 matcher_check_fn=matcher_check_fn,
@@ -2356,7 +2442,6 @@ class TestPatternMatcher(TestPatternMatcherBase):
             (torch.randn((2, 4)).to(device="xpu"),), device="xpu"
         )
 
-    @skipIfNoDynamoSupport
     @skipIfNoONEDNNBF16
     @skipIfNoONEDNN
     def test_qlinear_relu_int8_mixed_bf16(self):
@@ -2368,12 +2453,35 @@ class TestPatternMatcher(TestPatternMatcherBase):
         )
 
     @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_relu_int8_mixed_bf16_xpu(self):
+        r"""
+        This testcase will quantize a Linear->ReLU pattern with int8_mixed_bf16 quantization.
+        """
+        self._qlinear_unary_cpu_test_helper(
+            (torch.randn((2, 4)).to(device="xpu"),), device="xpu", int8_mixed_bf16=True
+        )
+
+    @skipIfNoDynamoSupport
     @skipIfNoONEDNN
     def test_qlinear_relu_input_dim_exceeds_2(self):
         r"""
         This testcase will quantize a Linear->ReLU pattern.
         """
         self._qlinear_unary_cpu_test_helper((torch.randn((2, 3, 4)),))
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_relu_input_dim_exceeds_2_xpu(self):
+        r"""
+        This testcase will quantize a Linear->ReLU pattern.
+        """
+        self._qlinear_unary_cpu_test_helper(
+            (torch.randn((2, 3, 4)).to(device="xpu"),), device="xpu"
+        )
 
     @skipIfNoDynamoSupport
     @skipIfNoONEDNNBF16
@@ -2384,6 +2492,20 @@ class TestPatternMatcher(TestPatternMatcherBase):
         """
         self._qlinear_unary_cpu_test_helper(
             (torch.randn((2, 3, 4)),), int8_mixed_bf16=True
+        )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_relu_int8_mixed_bf16_input_dim_exceeds_2_xpu(self):
+        r"""
+        This testcase will quantize a Linear->ReLU pattern with int8_mixed_bf16 quantization.
+        """
+        self._qlinear_unary_cpu_test_helper(
+            (torch.randn((2, 3, 4)).to(device="xpu"),),
+            device="xpu",
+            int8_mixed_bf16=True,
         )
 
     @skipIfNoDynamoSupport
@@ -2419,8 +2541,29 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 (torch.randn((2, 4)),), gelu, int8_mixed_bf16=True
             )
 
-    def _qlinear_add_test_helper(
-        self, device="cpu", use_relu=False, int8_mixed_bf16=False, is_qat=True, is_dynamic=True
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_gelu_int8_mixed_bf16_xpu(self):
+        r"""
+        This testcase will quantize a Linear->GELU pattern with int8_mixed_bf16 quantization.
+        """
+        for gelu in [torch.nn.GELU("none"), torch.nn.GELU("tanh")]:
+            self._qlinear_unary_cpu_test_helper(
+                (torch.randn((2, 4)).to(device="xpu"),),
+                gelu,
+                device="xpu",
+                int8_mixed_bf16=True,
+            )
+
+    def _qlinear_add_cpu_test_helper(
+        self,
+        device="cpu",
+        use_relu=False,
+        int8_mixed_bf16=False,
+        is_qat=True,
+        is_dynamic=True,
     ):
         r"""
         This testcase will quantize two consecutive Linear->Add(->relu) patterns as:
@@ -2492,7 +2635,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             lambda x, y: x.add_(y),
             lambda x, y: y.add_(x),
         ]
-        fake_quant_x2_list = [False, True] if int8_mixed_bf16 else [False]
+        fake_quant_x2_list = [False, True]
         cases = itertools.product(add_fn_list, fake_quant_x2_list)
         for add_fn, fq_x2 in cases:
             mod = M(add_fn, use_relu, fq_x2).eval().to(device=device)
@@ -2602,9 +2745,22 @@ class TestPatternMatcher(TestPatternMatcherBase):
             is_dynamic=is_dynamic,
         )
 
+    @parametrize("use_relu", [True, False])
+    @parametrize("is_qat", [False])
+    @parametrize("is_dynamic", [False])
+    def test_qlinear_add_int8_mixed_bf16_xpu(self, use_relu, is_qat, is_dynamic):
+        self._qlinear_add_cpu_test_helper(
+            device="xpu",
+            int8_mixed_bf16=True,
+            use_relu=use_relu,
+            is_qat=is_qat,
+            is_dynamic=is_dynamic,
+        )
+
     def _qlinear_dequant_promotion_cpu_test_helper(
         self,
         inputs,
+        device="cpu",
         int8_mixed_bf16=False,
         is_dynamic=False,
         matcher_check_fn=None,
@@ -2624,7 +2780,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 temp = self.linear2(temp) + self.linear3(temp)
                 return temp
 
-        mod = M().eval()
+        mod = M().eval().to(device=device)
 
         def default_matcher_check_fn():
             # 1. Dequant pattern matcher for dequant promotion * 1
@@ -2670,6 +2826,26 @@ class TestPatternMatcher(TestPatternMatcherBase):
         self._qlinear_dequant_promotion_cpu_test_helper((torch.randn((2, 4)),))
 
     @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_dequant_promotion_xpu(self):
+        r"""
+        This testcase test if dequant node before linear is promoted correctly:
+                  X
+                  |
+               Linear1(X)
+                /   \
+        Linear2(X)   Linear3(X)
+                \   /
+                 Add
+                  |
+                  Y
+        """
+        self._qlinear_dequant_promotion_cpu_test_helper(
+            (torch.randn((2, 4)).to(device="xpu"),), device="xpu"
+        )
+
+    @skipIfNoDynamoSupport
     @skipIfNoONEDNNBF16
     @skipIfNoONEDNN
     def test_qlinear_dequant_promotion_int8_mixed_bf16(self):
@@ -2691,6 +2867,28 @@ class TestPatternMatcher(TestPatternMatcherBase):
         )
 
     @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_dequant_promotion_int8_mixed_bf16_xpu(self):
+        r"""
+        Test with int8_mixed_bf16 quantization.
+        This testcase test if dequant node before linear is promoted correctly:
+                  X
+                  |
+               Linear1(X)
+                /   \
+        Linear2(X)   Linear3(X)
+                \   /
+                 Add
+                  |
+                  Y
+        """
+        self._qlinear_dequant_promotion_cpu_test_helper(
+            (torch.randn((2, 4)).to(device="xpu"),), device="xpu", int8_mixed_bf16=True
+        )
+
+    @skipIfNoDynamoSupport
     @skipIfNoONEDNN
     def test_qlinear_dequant_promotion_cpu_input_dim_exceeds_2(self):
         r"""
@@ -2706,6 +2904,26 @@ class TestPatternMatcher(TestPatternMatcherBase):
                   Y
         """
         self._qlinear_dequant_promotion_cpu_test_helper((torch.randn((2, 3, 4)),))
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_dequant_promotion_input_dim_exceeds_2_xpu(self):
+        r"""
+        This testcase test if dequant node before linear is promoted correctly:
+                  X
+                  |
+               Linear1(X)
+                /   \
+        Linear2(X)   Linear3(X)
+                \   /
+                 Add
+                  |
+                  Y
+        """
+        self._qlinear_dequant_promotion_cpu_test_helper(
+            (torch.randn((2, 3, 4)).to(device="xpu"),), device="xpu"
+        )
 
     @skipIfNoDynamoSupport
     @skipIfNoONEDNNBF16
@@ -2726,6 +2944,30 @@ class TestPatternMatcher(TestPatternMatcherBase):
         """
         self._qlinear_dequant_promotion_cpu_test_helper(
             (torch.randn((2, 3, 4)),), int8_mixed_bf16=True
+        )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNNBF16
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_dequant_promotion_int8_mixed_bf16_input_dim_exceeds_2_xpu(self):
+        r"""
+        Test with int8_mixed_bf16 quantization.
+        This testcase test if dequant node before linear is promoted correctly:
+                  X
+                  |
+               Linear1(X)
+                /   \
+        Linear2(X)   Linear3(X)
+                \   /
+                 Add
+                  |
+                  Y
+        """
+        self._qlinear_dequant_promotion_cpu_test_helper(
+            (torch.randn((2, 3, 4)).to(device="xpu"),),
+            device="xpu",
+            int8_mixed_bf16=True,
         )
 
     @skipIfNoDynamoSupport
@@ -2823,6 +3065,40 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 (x1, x2),
                 matcher_check_fn,
                 check_quantization=True,
+            )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfNoXPU
+    def test_qlinear_mul(self):
+        r"""
+        This testcase will quantize a Linear->Mul pattern.
+        """
+
+        class M(torch.nn.Module):
+            def __init__(self, use_bias):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 5, use_bias)
+
+            def forward(self, x1, x2):
+                return torch.mul(self.linear(x1), x2)
+
+        bias_list = [True, False]
+        for bias in bias_list:
+            mod = M(bias).eval().to(device="xpu")
+            x1 = torch.randn((2, 4)).to(device="xpu")
+            x2 = torch.randn((2, 5)).to(device="xpu")
+
+            def matcher_check_fn():
+                self.assertEqual(
+                    counters["inductor"]["qlinear_weight_prepack_matcher_count"], 1
+                )
+
+            self._test_common(
+                mod,
+                (x1, x2),
+                check_quantization=True,
+                matcher_check_fn=matcher_check_fn,
             )
 
     @skipIfNoDynamoSupport
